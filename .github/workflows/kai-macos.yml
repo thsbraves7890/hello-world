@@ -1,6 +1,9 @@
 name: Kai commissioned macOS compatibility test
 on: workflow_dispatch
-permissions: {}
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
 env:
   KAI_WORKER: '0x64535f3e4e49e5a18ccff79fab0de9d071febe13'
 jobs:
@@ -12,7 +15,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 45 --max-filesize 10955 'https://s5.ninja/s5/blob/zHnnUuvPesEwnaJfZHnbGDF6JQBgcNwaVhNrkq8jqQTwzvWnXK' -o kai_csv_profiler-0.2.3-py3-none-any.whl
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 45 --max-filesize 10955 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/kai_csv_profiler-0.2.3-py3-none-any.whl" -o kai_csv_profiler-0.2.3-py3-none-any.whl
           cat > probe.py <<'KAI_PY'
           import hashlib,json,os,pathlib,platform,subprocess,sys,tempfile
           from datetime import datetime,timezone
@@ -22,7 +25,7 @@ jobs:
           w=pathlib.Path(W).resolve(strict=True)
           assert __debug__ and sys.version_info>=(3,11)
           assert w.stat().st_size==10955 and hashlib.sha256(w.read_bytes()).hexdigest()==H
-          p={'nonce':'kai-macos-8632-v1','time':datetime.now(timezone.utc).isoformat(),'wheel_sha256':H,'script_sha256':hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),'system':platform.system(),'platform':platform.platform(),'python':sys.version,'machine':platform.machine(),'proc_fd':pathlib.Path('/proc/self/fd').exists(),'github':{k:os.environ.get(k) for k in ['GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','RUNNER_ENVIRONMENT','KAI_WORKER']}}
+          p={'nonce':'kai-signed-macos-8643-v1','time':datetime.now(timezone.utc).isoformat(),'wheel_sha256':H,'script_sha256':hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),'system':platform.system(),'platform':platform.platform(),'python':sys.version,'machine':platform.machine(),'proc_fd':pathlib.Path('/proc/self/fd').exists(),'github':{k:os.environ.get(k) for k in ['GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','RUNNER_ENVIRONMENT','KAI_WORKER']}}
           def run(a):
            r=subprocess.run(a,stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=60)
            assert len(r.stdout.encode())+len(r.stderr.encode())<=65536
@@ -44,5 +47,31 @@ jobs:
           print('KAI_OBSERVATION_BEGIN')
           print(json.dumps(p,sort_keys=True,ensure_ascii=False))
           print('KAI_OBSERVATION_END')
+          pathlib.Path('observation.json').write_bytes((json.dumps(p,sort_keys=True,ensure_ascii=False)+'\n').encode('utf-8'))
           KAI_PY
           python3 probe.py
+      - name: Attest the exact observation file
+        id: attest
+        uses: actions/attest@60c80190bb1a4fb35e5724ede753db5656412b68
+        with:
+          subject-path: observation.json
+          create-storage-record: false
+      - name: Export signed result capsule for owner submission
+        shell: bash
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          python3 - <<'KAI_CAPSULE'
+          import base64,json,os,pathlib
+          report=pathlib.Path('observation.json').read_bytes()
+          bundle=pathlib.Path(os.environ['ATTESTATION_BUNDLE']).read_bytes()
+          assert 0<len(report)<=32768 and 0<len(bundle)<=49152
+          capsule={'schema':'kai-signed-observation-v1','report_base64':base64.b64encode(report).decode('ascii'),'bundle':json.loads(bundle)}
+          encoded=(json.dumps(capsule,sort_keys=True,separators=(',',':'))+'\n').encode('utf-8')
+          assert len(encoded)<=98304
+          pathlib.Path('capsule.json').write_bytes(encoded)
+          print('KAI_SIGNED_CAPSULE_BEGIN')
+          print(encoded.decode('utf-8'),end='')
+          print('KAI_SIGNED_CAPSULE_END')
+          KAI_CAPSULE
